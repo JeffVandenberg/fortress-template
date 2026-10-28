@@ -1,0 +1,17 @@
+# IDE and editor state
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python bytecode from the hooks
+__pycache__/
+*.pyc
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Never here: an agent's synced copies and stamp live in ~/.claude/hooks/<agent>/, and
+# memory lives in ~/.claude/projects/<home>/memory/. Neither belongs in any repo.
+FORTRESS_SYNC

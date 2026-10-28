@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Copy the biology that RUNS into one agent's home, and stamp it.
+#
+#   bin/sync-agent <agent-name> [hooks-dir]
+#     agent-name  the short name (daedalus, cassandra, …)
+#     hooks-dir   where the agent's copies live; default ~/.claude/hooks/<agent-name>
+#
+# Copies mind/hooks/*.py, mind/hooks/*.sh and template/AGENT_TEMPLATE.md,
+# then writes FORTRESS_SYNC (commit hash, date, Fortress path) beside them.
+# It does NOT touch the agent's settings.json: the agent's settings call the
+# agent's own copies, so Fortress is a resource, never a dependency (the
+# replication factor, 2026-10-02). It prints the settings block to
+# merge by hand the first time.
+set -euo pipefail
+fortress="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+agent="${1:?agent name}"
+hooks="${2:-$HOME/.claude/hooks/$agent}"
+allow_dirty=0; [ "${3:-}" = "--allow-dirty" ] && allow_dirty=1
+# A stamp names a commit; copies that no commit holds would read "in sync"
+# while being nothing of the kind (2026-10-02). Refuse, or stamp -dirty.
+dirty="$(git -C "$fortress" status --porcelain -- mind/hooks template)"
+suffix=""
+if [ -n "$dirty" ]; then
+  if [ "$allow_dirty" -eq 1 ]; then suffix="-dirty"; else
+    echo "refusing: mind/hooks or template has uncommitted changes in Fortress. Commit first, or pass --allow-dirty (stamps -dirty)." >&2
+    printf '%s\n' "$dirty" >&2
+    exit 1
+  fi
+fi
+mkdir -p "$hooks"
+cp "$fortress"/mind/hooks/*.py "$fortress"/mind/hooks/*.sh "$hooks"/
+cp "$fortress"/template/AGENT_TEMPLATE.md "$hooks"/
+chmod +x "$hooks"/*.sh "$hooks"/*.py
+head="$(git -C "$fortress" rev-parse HEAD)"
+printf '%s\n%s\n%s\n' "$head$suffix" "$(date '+%Y-%m-%d %H:%M %Z')" "$fortress" > "$hooks/FORTRESS_SYNC"
+echo "synced $agent ← fortress ${head:0:7}$suffix → $hooks"
+ls -1 "$hooks"
+cat <<EOF
+
+Settings block for <home>/.claude/settings.json (merge by hand; paths are this agent's own copies).
+Each line is guarded: a MISSING SCRIPT is said, never silent (2026-10-02).
+  SessionStart:
+    f="$hooks/memory-budget.py"; { [ -r "\$f" ] && python3 "\$f" "<memory-dir>" SessionStart $agent; } || printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HOOK MISSING or failed: %s"}}\n' "\$f"
+    f="$hooks/fortress-check.sh"; { [ -r "\$f" ] && bash "\$f"; } || printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HOOK MISSING or failed: %s"}}\n' "\$f"
+    f="$hooks/startup-injection.sh"; { [ -r "\$f" ] && bash "\$f" "<Display Name>" "<memory-dir>" "${agent}_deep_mind.md" "$agent"; } || printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HOOK MISSING or failed: %s"}}\n' "\$f"
+  PostToolUse (matcher Write|Edit|Bash):
+    f="$hooks/memory-budget.py"; { [ -r "\$f" ] && python3 "\$f" "<memory-dir>" PostToolUse $agent; } || printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"HOOK MISSING or failed: %s"}}\n' "\$f"
+  Plus the clock (mind/hooks/clock.json) on UserPromptSubmit and PostToolUse:Bash.
+EOF

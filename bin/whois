@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Who is awake, and which agent is each session?
+
+The harness writes one registry file per live session at
+~/.claude/sessions/<pid>.json: its messaging name (what SendMessage and
+ListAgents use), cwd, kind (interactive | bg) and status. Fortress knows
+each agent's home (agents/<x>.md, the Home line). This joins the two, so a
+prompt like "Daedalus and Cassandra, investigate X" can resolve to addresses
+without anyone pasting them.
+
+Usage: bin/whois [--fortress DIR] [--hook] [--json]
+  --fortress DIR  where agents/*.md live (default: this script's parent)
+  --hook          one SessionStart hookSpecificOutput line (for settings.json)
+  --json          machine-readable
+
+Names are derived by the harness (cwd basename + short hash) unless the
+session was started with `claude --name <name>` or renamed with /rename, in
+which case the name is the owner's and the registry says nameSource=user.
+Fails soft: a bad file is skipped and said; nothing here ever blocks.
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+SESSIONS = Path.home() / ".claude" / "sessions"
+HOME_RE = re.compile(r"\*\*Home:\*\*\s*`([^`]+)`")
+
+
+def agents(fortress: Path) -> list[tuple[str, str, Path]]:
+    """(display name, short name, resolved home) per agents/*.md with a Home line."""
+    out = []
+    for md in sorted((fortress / "agents").glob("*.md")):
+        text = md.read_text(encoding="utf-8", errors="replace")
+        m = HOME_RE.search(text)
+        if not m:
+            continue
+        title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), md.stem)
+        home = Path(os.path.expanduser(m.group(1))).resolve()
+        out.append((title, md.stem, home))
+    return out
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def sessions() -> tuple[list[dict], list[str]]:
+    rows, problems = [], []
+    if not SESSIONS.is_dir():
+        return rows, [f"no session registry at {SESSIONS}"]
+    for f in sorted(SESSIONS.glob("*.json")):
+        try:
+            s = json.loads(f.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - say it, never raise
+            problems.append(f"{f.name}: unreadable ({exc.__class__.__name__})")
+            continue
+        pid = s.get("pid")
+        if isinstance(pid, int) and not alive(pid):
+            continue  # stale file from a session that died without cleanup
+        rows.append(
+            {
+                "name": s.get("name"),
+                "nameSource": s.get("nameSource"),
+                "kind": s.get("kind"),
+                "status": s.get("status"),
+                "cwd": s.get("cwd"),
+                "pid": pid,
+            }
+        )
+    return rows, problems
+
+
+def join(rows: list[dict], known: list[tuple[str, str, Path]]) -> None:
+    for r in rows:
+        r["agent"] = r["agentShort"] = None
+        if not r["cwd"]:
+            continue
+        cwd = Path(r["cwd"]).resolve()
+        # Longest home that contains the cwd wins (a bg job may run in a subdir).
+        best = None
+        for title, short, home in known:
+            if cwd == home or home in cwd.parents:
+                if best is None or len(str(home)) > len(str(best[2])):
+                    best = (title, short, home)
+        if best:
+            r["agent"], r["agentShort"] = best[0], best[1]
+
+
+def render(rows: list[dict], problems: list[str], me: int | None) -> str:
+    if not rows:
+        lines = ["No live sessions in the registry."]
+    else:
+        lines = []
+        for r in rows:
+            who = r["agent"] or "(no Fortress agent for this cwd)"
+            tag = " (this session)" if me and r["pid"] == me else ""
+            named = "" if r["nameSource"] in (None, "derived", "auto") else f" [{r['nameSource']}-named]"
+            lines.append(f"{who} = {r['name']}{named}  {r['kind']} {r['status']}  {r['cwd']}{tag}")
+    lines.extend(f"whois: {p}" for p in problems)
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    fortress = Path(__file__).resolve().parent.parent
+    hook = as_json = False
+    args = iter(argv)
+    for a in args:
+        if a == "--fortress":
+            fortress = Path(next(args, str(fortress))).expanduser().resolve()
+        elif a == "--hook":
+            hook = True
+        elif a == "--json":
+            as_json = True
+        else:
+            print(__doc__, file=sys.stderr)
+            return 2
+    try:
+        known = agents(fortress)
+        rows, problems = sessions()
+        join(rows, known)
+        if not known:
+            problems.append(f"no agents with a Home line under {fortress / 'agents'}")
+        # The harness exports the running session's pid (CLAUDE_PID) into its shells and hooks.
+        me = os.environ.get("CLAUDE_PID")
+        me = int(me) if me and me.isdigit() else None
+        if as_json:
+            print(json.dumps({"sessions": rows, "problems": problems}, indent=2))
+            return 0
+        text = render(rows, problems, me)
+        if hook:
+            text = "----- PEERS -----\n" + text
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}))
+        else:
+            print(text)
+    except Exception as exc:  # noqa: BLE001 - a silent lookup is worse than none
+        msg = f"whois FAILED: {exc.__class__.__name__}: {exc}"
+        if hook:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": msg}}))
+        else:
+            print(msg, file=sys.stderr)
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

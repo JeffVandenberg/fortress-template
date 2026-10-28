@@ -1,0 +1,18 @@
+{
+  "_comment": "Shape of <home>/.claude/settings.json for the agent 'daedalus'. bin/new-agent prints the real paths; <memory-dir> is ~/.claude/projects/<home path with every non-alphanumeric char as '-'>/memory. Each hook line is guarded so a missing script is SAID, never silent.",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "printf '[clock: %s]\\n' \"$(date '+%a %b %-d %-I:%M %p %Z')\" 2>/dev/null || true", "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"[clock: %s]\"}}\\n' \"$(date '+%a %b %-d %-I:%M %p %Z')\" 2>/dev/null || true", "timeout": 5 } ] },
+      { "matcher": "Write|Edit|Bash", "hooks": [ { "type": "command", "command": "f=\"$HOME/.claude/hooks/daedalus/memory-budget.py\"; { [ -r \"$f\" ] && python3 \"$f\" \"<memory-dir>\" PostToolUse daedalus; } || printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK MISSING or failed: %s\"}}\\n' \"$f\"", "timeout": 5 } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "f=\"$HOME/.claude/hooks/daedalus/memory-budget.py\"; { [ -r \"$f\" ] && python3 \"$f\" \"<memory-dir>\" SessionStart daedalus; } || printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"HOOK MISSING or failed: %s\"}}\\n' \"$f\"", "timeout": 5 } ] },
+      { "hooks": [ { "type": "command", "command": "f=\"$HOME/.claude/hooks/daedalus/fortress-check.sh\"; { [ -r \"$f\" ] && bash \"$f\"; } || printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"HOOK MISSING or failed: %s\"}}\\n' \"$f\"", "timeout": 5, "statusMessage": "Checking Fortress" } ] },
+      { "hooks": [ { "type": "command", "command": "f=\"$HOME/.claude/hooks/daedalus/startup-injection.sh\"; { [ -r \"$f\" ] && bash \"$f\" \"Daedalus\" \"<memory-dir>\" daedalus_deep_mind.md daedalus; } || printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"HOOK MISSING or failed: %s\"}}\\n' \"$f\"", "timeout": 10, "statusMessage": "Loading the agent template and the deep mind" } ] },
+      { "hooks": [ { "type": "command", "command": "f=\"$HOME/projects/fortress/bin/whois\"; { [ -r \"$f\" ] && python3 \"$f\" --hook; } || printf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"whois unavailable (Fortress absent at %s); peers unknown this session\"}}\\n' \"$f\"", "timeout": 5, "statusMessage": "Who is awake" } ] }
+    ]
+  }
+}
